@@ -1,7 +1,6 @@
 extern crate rayon;
 extern crate sqlparser;
 
-use sqlparser::ast::SetExpr;
 use sqlparser::ast::SetExpr::Values;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
@@ -10,14 +9,6 @@ use sqlparser::parser::Parser;
 use rayon::prelude::*;
 use sqlparser::ast::Query;
 use std::fs::read_to_string;
-
-// Get first cmd line arg
-fn get_arg() -> String {
-    let args: Vec<String> = std::env::args().collect();
-    let arg = args.get(0).unwrap();
-
-    arg.to_string()
-}
 
 fn read_lines(filename: &str) -> Vec<String> {
     let mut result = Vec::new();
@@ -155,7 +146,7 @@ fn main() {
     let headers = column_names(contents.next().unwrap());
 
     // Filter down to only first 100 lines
-    let contents = contents.take(1).collect::<Vec<&String>>();
+    let contents = contents.collect::<Vec<&String>>();
 
     // Using rayon to parallelize map
     let rows = rayonize(contents);
