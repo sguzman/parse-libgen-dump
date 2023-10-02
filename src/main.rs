@@ -149,13 +149,20 @@ fn main() {
 
     // Get file contents, by lines
     let contents = read_lines(filename);
+    let mut contents = contents.iter();
+
+    // Get column names
+    let headers = column_names(contents.next().unwrap());
 
     // Filter down to only first 100 lines
-    let contents = contents.iter().take(2).collect::<Vec<&String>>();
+    let contents = contents.take(1).collect::<Vec<&String>>();
 
     // Using rayon to parallelize map
     let rows = rayonize(contents);
-    println!("{:?}", rows);
 
-    println!("Done");
+    let mut writer = csv::Writer::from_writer(std::io::stdout());
+    writer.write_record(&headers).unwrap();
+    for row in rows {
+        writer.write_record(&row).unwrap();
+    }
 }
