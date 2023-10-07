@@ -15,3 +15,9 @@ Cargo.lock
 
 libgen.sql
 data.csv
+libgen_compact.sql
+fiction.sql
+scimag.sql
+libgen_compact.csv
+fiction.csv
+scimag.csv
