@@ -7,14 +7,24 @@ default-run = "main"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-sqlparser = "0.38.0"
+sqlparser = "0.39.0"
 rayon = "1.8.0"
 csv = "1.2.2"
 env_logger = "0.10.0"
 log = "0.4.20"
 chrono = "0.4.31"
+tokio = { version = "1.33.0", features = ["full"] }
 
 # Default binary
 [[bin]]
 name = "main"
 path = "src/main.rs"
+
+# Additional binaries
+[[bin]]
+name = "libgen"
+path = "src/libgen.rs"
+
+[[bin]]
+name = "fiction"
+path = "src/fiction.rs"

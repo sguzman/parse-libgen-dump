@@ -21,3 +21,6 @@ scimag.sql
 libgen_compact.csv
 fiction.csv
 scimag.csv
+*.log
+*.csv
+*.sql

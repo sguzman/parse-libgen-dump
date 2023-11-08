@@ -10,14 +10,9 @@ use parse_libgen::logic;
 
 // Files to parse
 const LIBGEN_COMPACT: &str = "libgen_compact.sql";
-const FICTION: &str = "fiction.sql";
-const SCIMAG: &str = "scimag.sql";
 
 // Tables to parse
 const UPDATED: &str = "updated";
-const FICTION_TABLE: &str = "fiction";
-const FIC_DESCR: &str = "fiction_description";
-const SCIMAG_TABLE: &str = "scimag";
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
@@ -39,4 +34,6 @@ fn main() {
         .filter(None, LevelFilter::Info)
         .init();
     log::info!("Starting");
+
+    logic(LIBGEN_COMPACT, UPDATED);
 }
