@@ -31,8 +31,7 @@ fn predicate(line: &String, table: &str) -> bool {
 
 // Write a single row into an open file handle
 pub fn write_row(writer: &mut csv::Writer<File>, row: Vec<String>) {
-    let row = row.join(",");
-    writer.write_record(&[row]).unwrap();
+    writer.write_record(row).unwrap();
 }
 
 async fn produce(
@@ -45,12 +44,16 @@ async fn produce(
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
-        if predicate(&line.as_ref().unwrap(), FICTION_TABLE) {
-            tx1.send(line.unwrap()).await.unwrap();
-        } else if predicate(&line.as_ref().unwrap(), FIC_DESCR) {
-            tx2.send(line.unwrap()).await.unwrap();
+        if let Ok(line) = line {
+            if predicate(&line, FICTION_TABLE) {
+                tx1.send(line).await.unwrap();
+            } else if predicate(&line, FIC_DESCR) {
+                tx2.send(line).await.unwrap();
+            } else {
+                log::debug!("Ignoring line");
+            }
         } else {
-            log::debug!("Ignoring line");
+            log::debug!("Bad line");
         }
     }
 
@@ -209,7 +212,7 @@ async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
         }
     }
 
-    log::info!("Flushing writer");
+    log::info!("Flushing writer for {}", output_file);
     writer.flush().unwrap();
 }
 
@@ -242,10 +245,8 @@ async fn main() -> io::Result<()> {
     let consumer1 = task::spawn(consume(rx1, FICTION_TABLE));
     let consumer2 = task::spawn(consume(rx2, FIC_DESCR));
 
-    // Await the tasks
-    let _ = producer.await.unwrap();
-    let _ = consumer1.await.unwrap();
-    let _ = consumer2.await.unwrap();
+    // Await_all for producer and two consumers
+    let _ = tokio::join!(producer, consumer1, consumer2);
 
     Ok(())
 }
