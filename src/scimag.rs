@@ -1,20 +1,19 @@
 // Import libgen_compact.rs
 extern crate csv;
 extern crate env_logger;
+extern crate tokio;
+
+use std::io::{BufRead, Write};
 
 use chrono::Local;
 use env_logger::Builder;
-use log::LevelFilter;
+use log::{debug, error, info, LevelFilter};
 use sqlparser::ast::Query;
 use sqlparser::ast::SetExpr::Values;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::Write;
-use tokio::io;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task;
 
@@ -32,8 +31,29 @@ fn predicate(line: &String, table: &str) -> bool {
 }
 
 // Write a single row into an open file handle
-pub fn write_row(writer: &mut csv::Writer<File>, row: Vec<String>) {
+pub fn write_row(writer: &mut csv::Writer<std::fs::File>, row: Vec<String>) {
     writer.write_record(row).unwrap();
+}
+
+// Produce lines from a file
+async fn get_line(
+    line: String,
+    tx1: mpsc::Sender<String>,
+    tx2: mpsc::Sender<String>,
+    tx3: mpsc::Sender<String>,
+    tx4: mpsc::Sender<String>,
+) {
+    if predicate(&line, SCIMAGS) {
+        tx1.send(line).await.unwrap();
+    } else if predicate(&line, MAGS) {
+        tx2.send(line).await.unwrap();
+    } else if predicate(&line, PUBS) {
+        tx3.send(line).await.unwrap();
+    } else if predicate(&line, REPORTS) {
+        tx4.send(line).await.unwrap();
+    } else {
+        debug!("Ignoring line");
+    }
 }
 
 async fn produce(
@@ -42,28 +62,27 @@ async fn produce(
     tx2: mpsc::Sender<String>,
     tx3: mpsc::Sender<String>,
     tx4: mpsc::Sender<String>,
-) -> Result<(), io::Error> {
-    log::info!("Reading lines from {}", file_path);
-    let file = File::open(file_path).unwrap();
-    let reader = BufReader::new(file);
+) -> Result<(), std::io::Error> {
+    info!("Reading lines from {}", file_path);
 
-    for line in reader.lines() {
+    let file = std::fs::File::open(file_path).unwrap();
+    let reader = std::io::BufReader::new(file);
+
+    // Iterate over lines
+    reader.lines().for_each(|line| {
         if let Ok(line) = line {
-            if predicate(&line, SCIMAGS) {
-                tx1.send(line).await.unwrap();
-            } else if predicate(&line, MAGS) {
-                tx2.send(line).await.unwrap();
-            } else if predicate(&line, PUBS) {
-                tx3.send(line).await.unwrap();
-            } else if predicate(&line, REPORTS) {
-                tx4.send(line).await.unwrap();
-            } else {
-                log::debug!("Ignoring line");
-            }
-        } else {
-            log::debug!("Bad line");
+            // Use let to capture variables for this closure
+            let tx1 = tx1.clone();
+            let tx2 = tx2.clone();
+            let tx3 = tx3.clone();
+            let tx4 = tx4.clone();
+
+            // Spawn a task to process the line
+            task::spawn(async move {
+                get_line(line, tx1, tx2, tx3, tx4).await;
+            });
         }
-    }
+    });
 
     Ok(())
 }
@@ -71,7 +90,7 @@ async fn produce(
 fn parse_sql(sql: &String) -> Statement {
     let dialect = MySqlDialect {};
     let sql = sql.as_str();
-    log::debug!("Parsing SQL: {}", sql);
+    debug!("Parsing SQL: {}", sql);
     // Parse SQL
     let ast = Parser::parse_sql(&dialect, sql);
 
@@ -83,7 +102,7 @@ fn parse_sql(sql: &String) -> Statement {
             insert
         }
         Err(e) => {
-            log::error!("Error parsing SQL: {}", e);
+            error!("Error parsing SQL: {}", e);
             // Print sql
             panic!("{}", sql);
         }
@@ -156,7 +175,7 @@ fn rows(val: sqlparser::ast::Values) -> Vec<Vec<String>> {
                 // Handle null as empty string
                 sqlparser::ast::Expr::Value(sqlparser::ast::Value::Null) => "",
                 _ => {
-                    log::error!("Unknown type: {:?}", col);
+                    error!("Unknown type: {:?}", col);
                     panic!("Unknown type");
                 }
             };
@@ -167,7 +186,7 @@ fn rows(val: sqlparser::ast::Values) -> Vec<Vec<String>> {
         rows.push(single_row);
     });
 
-    log::debug!("Rows: {}", rows.len());
+    debug!("Rows: {}", rows.len());
     rows
 }
 
@@ -191,10 +210,10 @@ fn parse_values(sql: &String) -> Vec<Vec<String>> {
 fn ensure_file(file: &String) {
     let file = std::path::Path::new(&file);
     if file.exists() {
-        log::debug!("File exists already");
+        debug!("File exists already");
     } else {
-        log::debug!("Creating file");
-        let mut file = File::create(file).unwrap();
+        debug!("Creating file");
+        let mut file = std::fs::File::create(file).unwrap();
         file.write_all(b"").unwrap();
         file.sync_all().unwrap();
         file.flush().unwrap();
@@ -202,7 +221,7 @@ fn ensure_file(file: &String) {
 }
 
 async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
-    log::info!("Writing to {}", output_file);
+    info!("Writing to {}", output_file);
     let csv = format!("{}.csv", output_file);
     ensure_file(&csv);
     let mut writer = csv::Writer::from_path(csv).unwrap();
@@ -210,7 +229,7 @@ async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
     // First line is column names
     let line = rx.recv().await.unwrap();
     let columns = column_names(&line);
-    log::info!("Columns: {:?} for file {}", columns, output_file);
+    info!("Columns: {:?} for file {}", columns, output_file);
     write_row(&mut writer, columns);
 
     while let Some(line) = rx.recv().await {
@@ -220,12 +239,12 @@ async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
         }
     }
 
-    log::info!("Flushing writer for {}", output_file);
+    info!("Flushing writer for {}", output_file);
     writer.flush().unwrap();
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> tokio::io::Result<()> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(1)
         .build_global()
@@ -244,7 +263,7 @@ async fn main() -> io::Result<()> {
         })
         .filter(None, LevelFilter::Info)
         .init();
-    log::info!("Starting");
+    info!("Starting");
 
     // Make 5 channels. One for the producer and four for the consumers
     let (tx1, rx1) = mpsc::channel(100);
