@@ -3,7 +3,7 @@ extern crate csv;
 extern crate env_logger;
 extern crate tokio;
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 
 use chrono::Local;
 use env_logger::Builder;
@@ -14,7 +14,6 @@ use sqlparser::ast::SetExpr::Values;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task;
 
@@ -51,21 +50,23 @@ async fn produce(
     tx2: mpsc::Sender<String>,
 ) -> Result<(), std::io::Error> {
     log::info!("Reading lines from {}", file_path);
-    let file = tokio::fs::File::open(file_path).await.unwrap();
+    let file = std::fs::File::open(file_path).unwrap();
 
-    let reader = tokio::io::BufReader::new(file);
-    let mut lines = reader.lines();
+    let reader = std::io::BufReader::new(file);
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        // Use let to capture variables for this closure
-        let tx1 = tx1.clone();
-        let tx2 = tx2.clone();
+    // Iterate over lines
+    reader.lines().for_each(|line| {
+        if let Ok(line) = line {
+            // Use let to capture variables for this closure
+            let tx1 = tx1.clone();
+            let tx2 = tx2.clone();
 
-        // Spawn a task to process the line
-        task::spawn(async move {
-            get_line(line, tx1, tx2).await;
-        });
-    }
+            // Spawn a task to process the line
+            task::spawn(async move {
+                get_line(line, tx1, tx2).await;
+            });
+        }
+    });
 
     Ok(())
 }
