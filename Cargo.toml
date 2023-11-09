@@ -29,3 +29,7 @@ path = "src/libgen.rs"
 [[bin]]
 name = "fiction"
 path = "src/fiction.rs"
+
+[[bin]]
+name = "scimag"
+path = "src/scimag.rs"
