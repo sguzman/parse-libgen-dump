@@ -1,20 +1,20 @@
 // Import libgen_compact.rs
 extern crate csv;
 extern crate env_logger;
+extern crate tokio;
+
+use std::io::Write;
 
 use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
+
 use sqlparser::ast::Query;
 use sqlparser::ast::SetExpr::Values;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::Write;
-use tokio::io;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task;
 
@@ -30,31 +30,41 @@ fn predicate(line: &String, table: &str) -> bool {
 }
 
 // Write a single row into an open file handle
-pub fn write_row(writer: &mut csv::Writer<File>, row: Vec<String>) {
+pub fn write_row(writer: &mut csv::Writer<std::fs::File>, row: Vec<String>) {
     writer.write_record(row).unwrap();
+}
+
+// Produce lines from a file
+async fn get_line(line: String, tx1: mpsc::Sender<String>, tx2: mpsc::Sender<String>) {
+    if predicate(&line, FICTION_TABLE) {
+        tx1.send(line).await.unwrap();
+    } else if predicate(&line, FIC_DESCR) {
+        tx2.send(line).await.unwrap();
+    } else {
+        log::debug!("Ignoring line");
+    }
 }
 
 async fn produce(
     file_path: String,
     tx1: mpsc::Sender<String>,
     tx2: mpsc::Sender<String>,
-) -> Result<(), io::Error> {
+) -> Result<(), std::io::Error> {
     log::info!("Reading lines from {}", file_path);
-    let file = File::open(file_path).unwrap();
-    let reader = BufReader::new(file);
+    let file = tokio::fs::File::open(file_path).await.unwrap();
 
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            if predicate(&line, FICTION_TABLE) {
-                tx1.send(line).await.unwrap();
-            } else if predicate(&line, FIC_DESCR) {
-                tx2.send(line).await.unwrap();
-            } else {
-                log::debug!("Ignoring line");
-            }
-        } else {
-            log::debug!("Bad line");
-        }
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        // Use let to capture variables for this closure
+        let tx1 = tx1.clone();
+        let tx2 = tx2.clone();
+
+        // Spawn a task to process the line
+        task::spawn(async move {
+            get_line(line, tx1, tx2).await;
+        });
     }
 
     Ok(())
@@ -186,7 +196,7 @@ fn ensure_file(file: &String) {
         log::debug!("File exists already");
     } else {
         log::debug!("Creating file");
-        let mut file = File::create(file).unwrap();
+        let mut file = std::fs::File::create(file).unwrap();
         file.write_all(b"").unwrap();
         file.sync_all().unwrap();
         file.flush().unwrap();
@@ -217,11 +227,9 @@ async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build_global()
-        .unwrap();
+async fn main() -> tokio::io::Result<()> {
+    // Log starting time
+    let start = Local::now();
 
     // Initialize logger
     Builder::new()
@@ -237,6 +245,7 @@ async fn main() -> io::Result<()> {
         .filter(None, LevelFilter::Info)
         .init();
     log::info!("Starting");
+    log::info!("Starting at {}", start);
 
     let (tx1, rx1) = mpsc::channel(32);
     let (tx2, rx2) = mpsc::channel(32);
@@ -248,5 +257,15 @@ async fn main() -> io::Result<()> {
     // Await_all for producer and two consumers
     let _ = tokio::join!(producer, consumer1, consumer2);
 
+    // Log ending time
+    let end = Local::now();
+    log::info!("Ending at {}", end);
+
+    // Log duration
+    let duration = end - start;
+    // Convert to seconds
+    let duration = duration.num_seconds();
+
+    log::info!("Duration: {}", duration);
     Ok(())
 }
