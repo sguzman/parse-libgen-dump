@@ -64,12 +64,13 @@ async fn produce(
     tx4: mpsc::Sender<String>,
 ) -> Result<(), std::io::Error> {
     info!("Reading lines from {}", file_path);
+    use parse_libgen::my_reader;
 
-    let file = std::fs::File::open(file_path).unwrap();
-    let reader = std::io::BufReader::new(file);
+    let mut reader = my_reader::BufReader::open(file_path).unwrap();
+    let mut buffer = String::new();
 
     // Iterate over lines
-    reader.lines().for_each(|line| {
+    while let Some(line) = reader.read_line(&mut buffer) {
         if let Ok(line) = line {
             // Use let to capture variables for this closure
             let tx1 = tx1.clone();
@@ -77,12 +78,11 @@ async fn produce(
             let tx3 = tx3.clone();
             let tx4 = tx4.clone();
 
-            // Spawn a task to process the line
-            task::spawn(async move {
-                get_line(line, tx1, tx2, tx3, tx4).await;
-            });
+            let line = line.trim().to_string();
+
+            get_line(line, tx1, tx2, tx3, tx4).await;
         }
-    });
+    }
 
     Ok(())
 }
