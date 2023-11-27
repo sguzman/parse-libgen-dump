@@ -1,30 +1,40 @@
 // Import libgen_compact.rs
 extern crate csv;
 extern crate env_logger;
-extern crate tokio;
-
-use std::io::{BufRead, Write};
+extern crate rayon;
 
 use chrono::Local;
 use env_logger::Builder;
 use log::{debug, error, info, LevelFilter};
+use rayon::prelude::*;
 use sqlparser::ast::Query;
 use sqlparser::ast::SetExpr::Values;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use tokio::io::AsyncBufReadExt;
-use tokio::sync::mpsc;
-use tokio::task;
+use std::io::{BufRead, Write};
+
+const CORES: usize = 1;
+const WORK: usize = 2;
+
+const TOTAL: usize = CORES * WORK;
 
 // Files to parse
-const SCIMAG: &str = "scimag.sql";
+const INPUT: &str = "scimag.sql";
 
 // Tables to parse
 const SCIMAGS: &str = "scimag";
 const MAGS: &str = "magazines";
 const PUBS: &str = "publishers";
 const REPORTS: &str = "error_report";
+
+// Struct to hold the number of lines for each file
+struct Data {
+    scimag: Vec<Vec<String>>,
+    magazines: Vec<Vec<String>>,
+    publishers: Vec<Vec<String>>,
+    error_report: Vec<Vec<String>>,
+}
 
 fn predicate(line: &String, table: &str) -> bool {
     line.starts_with(format!("INSERT INTO `{}`", table).as_str())
@@ -35,56 +45,78 @@ pub fn write_row(writer: &mut csv::Writer<std::fs::File>, row: Vec<String>) {
     writer.write_record(row).unwrap();
 }
 
-// Produce lines from a file
-async fn get_line(
-    line: String,
-    tx1: mpsc::Sender<String>,
-    tx2: mpsc::Sender<String>,
-    tx3: mpsc::Sender<String>,
-    tx4: mpsc::Sender<String>,
-) {
-    if predicate(&line, SCIMAGS) {
-        tx1.send(line).await.unwrap();
+// Return string of name of file to write to
+fn get_line(line: String) -> Option<&'static str> {
+    let out = if predicate(&line, SCIMAGS) {
+        SCIMAGS
     } else if predicate(&line, MAGS) {
-        tx2.send(line).await.unwrap();
+        MAGS
     } else if predicate(&line, PUBS) {
-        tx3.send(line).await.unwrap();
+        PUBS
     } else if predicate(&line, REPORTS) {
-        tx4.send(line).await.unwrap();
+        REPORTS
     } else {
-        debug!("Ignoring line");
+        ""
+    };
+
+    if out == "" {
+        None
+    } else {
+        Some(out)
     }
 }
 
-async fn produce(
-    file_path: String,
-    tx1: mpsc::Sender<String>,
-    tx2: mpsc::Sender<String>,
-    tx3: mpsc::Sender<String>,
-    tx4: mpsc::Sender<String>,
-) -> Result<(), std::io::Error> {
-    info!("Reading lines from {}", file_path);
+fn process_lines() {
+    info!("Reading lines from {}", INPUT);
     use parse_libgen::my_reader;
 
-    let mut reader = my_reader::BufReader::open(file_path).unwrap();
+    let mut reader = my_reader::BufReader::open(INPUT).unwrap();
     let mut buffer = String::new();
+    let mut line_work = Vec::new();
+
+    // Ensure the output file exists
+    ensure_file(&format!("{}.csv", SCIMAGS));
+    ensure_file(&format!("{}.csv", MAGS));
+    ensure_file(&format!("{}.csv", PUBS));
+    ensure_file(&format!("{}.csv", REPORTS));
+
+    // Create writer for each file
+    let mut scimag = csv::Writer::from_path(format!("{}.csv", SCIMAGS)).unwrap();
+    let mut magazines = csv::Writer::from_path(format!("{}.csv", MAGS)).unwrap();
+    let mut publishers = csv::Writer::from_path(format!("{}.csv", PUBS)).unwrap();
+    let mut error_report = csv::Writer::from_path(format!("{}.csv", REPORTS)).unwrap();
+
+    // First time through, write the column names
+    let mut scimag_first = true;
+    let mut magazines_first = true;
+    let mut publishers_first = true;
+    let mut error_report_first = true;
 
     // Iterate over lines
     while let Some(line) = reader.read_line(&mut buffer) {
         if let Ok(line) = line {
-            // Use let to capture variables for this closure
-            let tx1 = tx1.clone();
-            let tx2 = tx2.clone();
-            let tx3 = tx3.clone();
-            let tx4 = tx4.clone();
-
             let line = line.trim().to_string();
 
-            get_line(line, tx1, tx2, tx3, tx4).await;
+            if line_work.len() == TOTAL {
+                // Use Rayon to process each line in line_work in parallel
+                let items = line_work.par_iter().map(|line: &String| {
+                    // Get the name of the file to write to
+                    let name = get_line(line.clone());
+
+                    // If the name is None, then we don't care about this line
+                    if let Some(name) = name {
+                        // Get the values from the line
+                        let values = parse_values(line);
+
+                        // Get the column names from the line
+                        let columns = column_names(line);
+                    }
+                });
+            } else {
+                line_work.push(line.clone());
+            }
         }
     }
-
-    Ok(())
 }
 
 fn parse_sql(sql: &String) -> Statement {
@@ -209,44 +241,31 @@ fn parse_values(sql: &String) -> Vec<Vec<String>> {
 // Given a string, assume its a filename and ensure it exists
 fn ensure_file(file: &String) {
     let file = std::path::Path::new(&file);
-    if file.exists() {
-        debug!("File exists already");
-    } else {
-        debug!("Creating file");
-        let mut file = std::fs::File::create(file).unwrap();
-        file.write_all(b"").unwrap();
-        file.sync_all().unwrap();
-        file.flush().unwrap();
+    debug!("Creating file");
+    let mut file = std::fs::File::create(file).unwrap();
+    file.write_all(b"").unwrap();
+    file.sync_all().unwrap();
+    file.flush().unwrap();
+}
+
+// FUnction to write to file on subsequent calls
+fn next_write(name: &'static str, mut csv: csv::Writer<std::fs::File>, data: Vec<Vec<String>>) {
+    info!("Writing row to {}", name);
+
+    for row in data {
+        write_row(&mut csv, row);
     }
 }
 
-async fn consume(mut rx: mpsc::Receiver<String>, output_file: &str) {
-    info!("Writing to {}", output_file);
-    let csv = format!("{}.csv", output_file);
-    ensure_file(&csv);
-    let mut writer = csv::Writer::from_path(csv).unwrap();
-
-    // First line is column names
-    let line = rx.recv().await.unwrap();
-    let columns = column_names(&line);
-    info!("Columns: {:?} for file {}", columns, output_file);
-    write_row(&mut writer, columns);
-
-    while let Some(line) = rx.recv().await {
-        let data = parse_values(&line);
-        for row in data {
-            write_row(&mut writer, row);
-        }
-    }
-
-    info!("Flushing writer for {}", output_file);
-    writer.flush().unwrap();
+// Function to write to file on initial call
+fn init_write(name: &'static str, mut csv: csv::Writer<std::fs::File>, columns: Vec<String>) {
+    info!("Columns: {:?} for file {}", columns, name);
+    write_row(&mut csv, columns);
 }
 
-#[tokio::main]
-async fn main() -> tokio::io::Result<()> {
+fn main() {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
+        .num_threads(CORES)
         .build_global()
         .unwrap();
 
@@ -265,20 +284,5 @@ async fn main() -> tokio::io::Result<()> {
         .init();
     info!("Starting");
 
-    // Make 5 channels. One for the producer and four for the consumers
-    let (tx1, rx1) = mpsc::channel(100);
-    let (tx2, rx2) = mpsc::channel(100);
-    let (tx3, rx3) = mpsc::channel(100);
-    let (tx4, rx4) = mpsc::channel(100);
-
-    let producer = task::spawn(produce(SCIMAG.to_string(), tx1, tx2, tx3, tx4));
-    let consumer1 = task::spawn(consume(rx1, SCIMAGS));
-    let consumer2 = task::spawn(consume(rx2, MAGS));
-    let consumer3 = task::spawn(consume(rx3, PUBS));
-    let consumer4 = task::spawn(consume(rx4, REPORTS));
-
-    // Await_all for producer and two consumers
-    let _ = tokio::join!(producer, consumer1, consumer2, consumer3, consumer4);
-
-    Ok(())
+    process_lines();
 }
