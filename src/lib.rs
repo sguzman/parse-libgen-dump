@@ -1,7 +1,7 @@
-use log::{error, info, debug, warn};
+use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use regex::Regex;
-use sqlparser::ast::{Statement, SetExpr};
+use sqlparser::ast::{SetExpr, Statement};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
@@ -16,16 +16,19 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
         std::process::exit(1);
     });
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>().unwrap_or_else(|e| {
-        error!("Failed to read lines from input file: {}", e);
-        std::process::exit(1);
-    });
+    let lines: Vec<String> = reader
+        .lines()
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|e| {
+            error!("Failed to read lines from input file: {}", e);
+            std::process::exit(1);
+        });
 
     info!("Total lines in file: {}", lines.len());
 
     // First pass: extract CREATE TABLE statements and column names
     let (tables, create_statements, table_columns) = extract_create_tables(&lines);
-    
+
     info!("Found {} tables", tables.len());
     for table in &tables {
         info!("Table found: {}", table);
@@ -41,7 +44,7 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
             error!("Failed to create CSV writer for table {}: {}", table, e);
             std::process::exit(1);
         });
-        let headers: Vec<String> = columns.iter().map(|c| unquote_column_name(c)).collect();
+        let headers: Vec<String> = columns.iter().map(|c| c.name.value.clone()).collect();
         info!("Inserting headers for table {}: {:?}", table, headers);
         writer.write_record(&headers).unwrap_or_else(|e| {
             error!("Failed to write headers for table {}: {}", table, e);
@@ -59,6 +62,7 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
     let output_dir = Arc::new(output_dir.to_string());
     let insert_count = Arc::new(Mutex::new(0));
     let error_count = Arc::new(Mutex::new(0));
+    let table_row_counts = Arc::new(Mutex::new(HashMap::new()));
 
     lines.par_iter().for_each(|line| {
         if line.trim_start().to_lowercase().starts_with("insert into") {
@@ -66,29 +70,43 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
                 Ok((table_name, value_rows)) => {
                     let unquoted_table_name = unquote_table_name(&table_name);
                     if tables.contains(&unquoted_table_name) {
-                        let csv_path = Path::new(&*output_dir).join(format!("{}.csv", unquoted_table_name));
+                        let csv_path =
+                            Path::new(&*output_dir).join(format!("{}.csv", unquoted_table_name));
                         for values in value_rows {
                             match append_to_csv(&csv_path, &values) {
                                 Ok(_) => {
                                     let mut count = insert_count.lock().unwrap();
                                     *count += 1;
+                                    let mut table_counts = table_row_counts.lock().unwrap();
+                                    *table_counts
+                                        .entry(unquoted_table_name.clone())
+                                        .or_insert(0) += 1;
                                     if *count % 1000 == 0 {
                                         debug!("Processed {} INSERT rows", *count);
                                     }
-                                },
+                                }
                                 Err(e) => {
-                                    warn!("Failed to write to CSV for table {}: {}", unquoted_table_name, e);
+                                    warn!(
+                                        "Failed to write to CSV for table {}: {}",
+                                        unquoted_table_name, e
+                                    );
                                     let mut count = error_count.lock().unwrap();
                                     *count += 1;
                                 }
                             }
                         }
                     } else {
-                        warn!("Table {} not found in CREATE TABLE statements", unquoted_table_name);
+                        warn!(
+                            "Table {} not found in CREATE TABLE statements",
+                            unquoted_table_name
+                        );
                     }
-                },
+                }
                 Err(e) => {
-                    warn!("Failed to parse INSERT statement: {}. Skipping this line.", e);
+                    warn!(
+                        "Failed to parse INSERT statement: {}. Skipping this line.",
+                        e
+                    );
                     let mut count = error_count.lock().unwrap();
                     *count += 1;
                 }
@@ -97,8 +115,17 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
     });
 
     info!("Processing complete. Check the output directory for results.");
-    info!("Total INSERT rows processed: {}", *insert_count.lock().unwrap());
+    info!(
+        "Total INSERT rows processed: {}",
+        *insert_count.lock().unwrap()
+    );
     info!("Total errors encountered: {}", *error_count.lock().unwrap());
+
+    // Log row counts for each table
+    let table_counts = table_row_counts.lock().unwrap();
+    for (table, count) in table_counts.iter() {
+        info!("Rows inserted for table {}: {}", table, count);
+    }
 
     // Check file sizes after processing
     for table in &*tables {
@@ -135,71 +162,90 @@ fn parse_insert(sql: &str) -> Result<(String, Vec<Vec<String>>), String> {
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
     if let Statement::Insert { source, .. } = &ast[0] {
         if let SetExpr::Values(values) = source.body.as_ref() {
-            let parsed_values: Vec<Vec<String>> = values.rows.iter().map(|row| {
-                row.iter()
-                    .map(|expr| match expr {
-                        sqlparser::ast::Expr::Value(val) => match val {
-                            sqlparser::ast::Value::Number(n, _) => n.to_string(),
-                            sqlparser::ast::Value::SingleQuotedString(s) => s.clone(),
-                            sqlparser::ast::Value::DoubleQuotedString(s) => s.clone(),
-                            sqlparser::ast::Value::Null => "NULL".to_string(),
-                            _ => format!("{:?}", val),
-                        },
-                        _ => format!("{:?}", expr),
-                    })
-                    .collect()
-            }).collect();
-            debug!("Parsed INSERT for table {} with {} rows", table_name, parsed_values.len());
+            let parsed_values: Vec<Vec<String>> = values
+                .rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|expr| match expr {
+                            sqlparser::ast::Expr::Value(val) => match val {
+                                sqlparser::ast::Value::Number(n, _) => n.to_string(),
+                                sqlparser::ast::Value::SingleQuotedString(s) => s.clone(),
+                                sqlparser::ast::Value::DoubleQuotedString(s) => s.clone(),
+                                sqlparser::ast::Value::Null => "NULL".to_string(),
+                                _ => format!("{:?}", val),
+                            },
+                            _ => format!("{:?}", expr),
+                        })
+                        .collect()
+                })
+                .collect();
+            debug!(
+                "Parsed INSERT for table {} with {} rows",
+                table_name,
+                parsed_values.len()
+            );
             return Ok((table_name, parsed_values));
         }
     }
     Err("Failed to parse INSERT statement values".to_string())
 }
 
-fn extract_create_tables(lines: &[String]) -> (HashSet<String>, Vec<String>, HashMap<String, Vec<String>>) {
+fn extract_create_tables(
+    lines: &[String],
+) -> (HashSet<String>, Vec<String>, HashMap<String, Vec<String>>) {
     let mut tables = HashSet::new();
     let mut create_statements = Vec::new();
     let mut table_columns = HashMap::new();
+    let create_table_regex = Regex::new(r"^\s*CREATE\s+TABLE\s+`?(\w+)`?").unwrap();
+    let end_statement_regex = Regex::new(r".*\)\s*;").unwrap();
+
     let mut current_statement = Vec::new();
-    let mut in_create_table = false;
     let mut current_table = String::new();
+    let mut in_create_table = false;
 
     for line in lines {
-        let trimmed = line.trim();
-        if trimmed.to_lowercase().starts_with("create table") {
-            in_create_table = true;
-            current_statement.clear();
-            if let Some(table_name) = extract_table_name(trimmed) {
-                current_table = unquote_table_name(&table_name);
-                tables.insert(current_table.clone());
+        if !in_create_table {
+            if let Some(captures) = create_table_regex.captures(line) {
+                in_create_table = true;
+                current_table = captures[1].to_string();
+                current_statement.clear();
+                current_statement.push(line.clone());
             }
-        }
-
-        if in_create_table {
+        } else {
             current_statement.push(line.clone());
-
-            if trimmed.ends_with(';') {
+            if end_statement_regex.is_match(line) {
                 in_create_table = false;
                 let full_statement = current_statement.join("\n");
                 create_statements.push(full_statement.clone());
-                if let Some(columns) = extract_column_names(&full_statement) {
-                    table_columns.insert(current_table.clone(), columns);
+                tables.insert(current_table.clone());
+
+                // Parse the CREATE TABLE statement
+                let dialect = MySqlDialect {};
+                match Parser::parse_sql(&dialect, &full_statement) {
+                    Ok(ast) => {
+                        if let Statement::CreateTable { columns, .. } = &ast[0] {
+                            let column_names: Vec<String> =
+                                columns.iter().map(|col| col.name.value.clone()).collect();
+                            table_columns.insert(current_table.clone(), column_names);
+                        } else {
+                            warn!("Failed to extract columns for table {}", current_table);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse CREATE TABLE statement for {}: {}",
+                            current_table, e
+                        );
+                    }
                 }
+
                 current_statement.clear();
             }
         }
     }
 
     (tables, create_statements, table_columns)
-}
-
-fn extract_table_name(create_statement: &str) -> Option<String> {
-    let parts: Vec<&str> = create_statement.split_whitespace().collect();
-    if parts.len() >= 3 {
-        Some(parts[2].to_string())
-    } else {
-        None
-    }
 }
 
 fn unquote_table_name(table_name: &str) -> String {
@@ -237,5 +283,3 @@ fn append_to_csv(path: &Path, values: &[String]) -> std::io::Result<()> {
     writer.flush()?;
     Ok(())
 }
-
-// ... (other functions remain the same)
