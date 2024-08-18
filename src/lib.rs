@@ -1,5 +1,6 @@
 use log::{error, info, debug, warn};
 use rayon::prelude::*;
+use regex::Regex;
 use sqlparser::ast::{Statement, SetExpr};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
@@ -9,10 +10,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<()> {
-    let file = File::open(input_file)?;
+pub fn process_sql_file(input_file: &str, output_dir: &str) {
+    let file = File::open(input_file).unwrap_or_else(|e| {
+        error!("Failed to open input file: {}", e);
+        std::process::exit(1);
+    });
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>().unwrap_or_else(|e| {
+        error!("Failed to read lines from input file: {}", e);
+        std::process::exit(1);
+    });
 
     info!("Total lines in file: {}", lines.len());
 
@@ -25,16 +32,25 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<(
     }
 
     // Write CREATE TABLE statements to a file
-    write_create_tables(&create_statements, output_dir)?;
+    write_create_tables(&create_statements, output_dir);
 
     // Create CSV files for each table with headers
     for (table, columns) in &table_columns {
         let csv_path = Path::new(output_dir).join(format!("{}.csv", table));
-        let mut writer = csv::Writer::from_path(&csv_path)?;
+        let mut writer = csv::Writer::from_path(&csv_path).unwrap_or_else(|e| {
+            error!("Failed to create CSV writer for table {}: {}", table, e);
+            std::process::exit(1);
+        });
         let headers: Vec<String> = columns.iter().map(|c| unquote_column_name(c)).collect();
         info!("Inserting headers for table {}: {:?}", table, headers);
-        writer.write_record(&headers)?;
-        writer.flush()?;
+        writer.write_record(&headers).unwrap_or_else(|e| {
+            error!("Failed to write headers for table {}: {}", table, e);
+            std::process::exit(1);
+        });
+        writer.flush().unwrap_or_else(|e| {
+            error!("Failed to flush CSV writer for table {}: {}", table, e);
+            std::process::exit(1);
+        });
         info!("Created CSV file with headers: {:?}", csv_path);
     }
 
@@ -57,11 +73,11 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<(
                                     let mut count = insert_count.lock().unwrap();
                                     *count += 1;
                                     if *count % 1000 == 0 {
-                                        info!("Processed {} INSERT rows", *count);
+                                        debug!("Processed {} INSERT rows", *count);
                                     }
                                 },
                                 Err(e) => {
-                                    error!("Failed to write to CSV for table {}: {}", unquoted_table_name, e);
+                                    warn!("Failed to write to CSV for table {}: {}", unquoted_table_name, e);
                                     let mut count = error_count.lock().unwrap();
                                     *count += 1;
                                 }
@@ -72,7 +88,7 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<(
                     }
                 },
                 Err(e) => {
-                    error!("Failed to parse INSERT statement: {}", e);
+                    warn!("Failed to parse INSERT statement: {}. Skipping this line.", e);
                     let mut count = error_count.lock().unwrap();
                     *count += 1;
                 }
@@ -92,15 +108,32 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<(
             Err(e) => error!("Failed to get metadata for {}.csv: {}", table, e),
         }
     }
+}
 
-    Ok(())
+fn write_create_tables(create_statements: &[String], output_dir: &str) {
+    let path = Path::new(output_dir).join("create_tables.sql");
+    let mut file = File::create(&path).unwrap_or_else(|e| {
+        error!("Failed to create create_tables.sql: {}", e);
+        std::process::exit(1);
+    });
+    for statement in create_statements {
+        writeln!(file, "{}", statement).unwrap_or_else(|e| {
+            error!("Failed to write CREATE TABLE statement: {}", e);
+            std::process::exit(1);
+        });
+    }
 }
 
 fn parse_insert(sql: &str) -> Result<(String, Vec<Vec<String>>), String> {
+    let insert_regex = Regex::new(r"^INSERT\s+INTO\s+`([^`]+)`").unwrap();
+    let table_name = match insert_regex.captures(sql) {
+        Some(caps) => caps.get(1).unwrap().as_str().to_string(),
+        None => return Err("Invalid INSERT statement format".to_string()),
+    };
+
     let dialect = MySqlDialect {};
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
-    if let Statement::Insert { table_name, source, .. } = &ast[0] {
-        let table_name = table_name.to_string();
+    if let Statement::Insert { source, .. } = &ast[0] {
         if let SetExpr::Values(values) = source.body.as_ref() {
             let parsed_values: Vec<Vec<String>> = values.rows.iter().map(|row| {
                 row.iter()
@@ -120,7 +153,7 @@ fn parse_insert(sql: &str) -> Result<(String, Vec<Vec<String>>), String> {
             return Ok((table_name, parsed_values));
         }
     }
-    Err(format!("Failed to parse INSERT statement: {}", sql))
+    Err("Failed to parse INSERT statement values".to_string())
 }
 
 fn extract_create_tables(lines: &[String]) -> (HashSet<String>, Vec<String>, HashMap<String, Vec<String>>) {
@@ -160,15 +193,6 @@ fn extract_create_tables(lines: &[String]) -> (HashSet<String>, Vec<String>, Has
     (tables, create_statements, table_columns)
 }
 
-fn write_create_tables(create_statements: &[String], output_dir: &str) -> std::io::Result<()> {
-    let path = Path::new(output_dir).join("create_tables.sql");
-    let mut file = File::create(path)?;
-    for statement in create_statements {
-        writeln!(file, "{}", statement)?;
-    }
-    Ok(())
-}
-
 fn extract_table_name(create_statement: &str) -> Option<String> {
     let parts: Vec<&str> = create_statement.split_whitespace().collect();
     if parts.len() >= 3 {
@@ -206,8 +230,12 @@ fn append_to_csv(path: &Path, values: &[String]) -> std::io::Result<()> {
         .write(true)
         .append(true)
         .open(path)?;
-    let mut writer = csv::Writer::from_writer(file);
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(file);
     writer.write_record(values)?;
     writer.flush()?;
     Ok(())
 }
+
+// ... (other functions remain the same)
