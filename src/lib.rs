@@ -1,4 +1,5 @@
 use log::{debug, error, info, warn};
+use rayon::prelude::*;
 use sqlparser::ast::{SetExpr, Statement, Value};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
@@ -6,26 +7,19 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-pub fn process_sql_file(input_file: &str) -> std::io::Result<()> {
-    info!("Processing SQL file: {}", input_file);
-    let file_name = Path::new(input_file).file_stem().unwrap().to_str().unwrap();
-    let tables_file = format!("{}_tables.sql", file_name);
-    let csv_file = format!("{}.csv", file_name);
+pub fn process_sql_file_parallel(filename: &str) -> std::io::Result<()> {
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
 
-    // Extract CREATE TABLE statements
-    info!("Extracting CREATE TABLE statements to {}", tables_file);
-    extract_create_tables(input_file, &tables_file)?;
+    // Read the file into a Vec<String>
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    // Process INSERT statements
-    if input_file.contains("scimag") {
-        info!("Processing large file: {}", input_file);
-        process_large_file(input_file, &csv_file)?;
-    } else {
-        info!("Processing small file: {}", input_file);
-        process_small_file(input_file, &csv_file)?;
-    }
+    // Process lines in parallel
+    lines.par_iter().for_each(|line| {
+        // Process each line here
+        // Make sure to use thread-safe operations
+    });
 
-    info!("Processing complete for {}", input_file);
     Ok(())
 }
 

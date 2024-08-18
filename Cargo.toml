@@ -11,6 +11,7 @@ sqlparser = "0.35.0"
 csv = "1.1"
 log = "0.4"
 env_logger = "0.10"
+rayon = "1.7"
 
 # Default binary
 [[bin]]
