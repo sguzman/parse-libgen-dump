@@ -12,6 +12,7 @@ csv = "1.1"
 log = "0.4"
 env_logger = "0.10"
 rayon = "1.7"
+num_cpus = "1.15"
 
 # Default binary
 [[bin]]
