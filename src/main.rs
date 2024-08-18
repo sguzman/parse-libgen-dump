@@ -1,5 +1,5 @@
 use env_logger::Env;
-use log::{error, info};
+use log::{error, info, debug};
 use parse_libgen::process_sql_file;
 use std::env;
 use std::path::Path;
