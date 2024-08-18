@@ -19,34 +19,39 @@ pub fn process_sql_file_parallel(input_file: &str, output_file: &str) -> std::io
 
     lines.par_iter().for_each(|line| {
         if line.trim_start().to_lowercase().starts_with("insert into") {
-            let values = parse_values(line);
+            match parse_values(line) {
+                Ok(values) => {
+                    // Write headers if not written yet
+                    {
+                        let mut headers_guard = headers.lock().unwrap();
+                        if headers_guard.is_none() {
+                            let column_names = column_names(line);
+                            *headers_guard = Some(column_names.clone());
+                            let mut writer = writer.lock().unwrap();
+                            writer.write_record(&column_names).unwrap();
+                            info!("CSV headers written: {:?}", column_names);
+                        }
+                    }
 
-            // Write headers if not written yet
-            {
-                let mut headers_guard = headers.lock().unwrap();
-                if headers_guard.is_none() {
-                    let column_names = column_names(line);
-                    *headers_guard = Some(column_names.clone());
-                    let mut writer = writer.lock().unwrap();
-                    writer.write_record(&column_names).unwrap();
-                    info!("CSV headers written: {:?}", column_names);
+                    // Write values
+                    {
+                        let mut writer = writer.lock().unwrap();
+                        for row in values {
+                            writer.write_record(&row).unwrap();
+                        }
+                    }
+
+                    // Increment insert count
+                    {
+                        let mut count = insert_count.lock().unwrap();
+                        *count += 1;
+                        if *count % 1000 == 0 {
+                            info!("Processed {} INSERT statements", *count);
+                        }
+                    }
                 }
-            }
-
-            // Write values
-            {
-                let mut writer = writer.lock().unwrap();
-                for row in values {
-                    writer.write_record(&row).unwrap();
-                }
-            }
-
-            // Increment insert count
-            {
-                let mut count = insert_count.lock().unwrap();
-                *count += 1;
-                if *count % 1000 == 0 {
-                    info!("Processed {} INSERT statements", *count);
+                Err(e) => {
+                    error!("Error parsing line: {}", e);
                 }
             }
         }
@@ -57,19 +62,15 @@ pub fn process_sql_file_parallel(input_file: &str, output_file: &str) -> std::io
     Ok(())
 }
 
-fn parse_sql(sql: &str) -> Statement {
+fn parse_sql(sql: &str) -> Result<Statement, String> {
     let dialect = MySqlDialect {};
-    match Parser::parse_sql(&dialect, sql) {
-        Ok(ast) => ast[0].clone(),
-        Err(e) => {
-            error!("Failed to parse SQL: {}", e);
-            panic!("SQL parsing error");
-        }
-    }
+    Parser::parse_sql(&dialect, sql)
+        .map(|ast| ast[0].clone())
+        .map_err(|e| format!("Failed to parse SQL: {}", e))
 }
 
 fn column_names(sql: &str) -> Vec<String> {
-    let insert = parse_sql(sql);
+    let insert = parse_sql(sql).unwrap();
     match insert {
         Statement::Insert { columns, .. } => {
             let names: Vec<String> = columns.into_iter().map(|c| c.to_string()).collect();
@@ -83,8 +84,8 @@ fn column_names(sql: &str) -> Vec<String> {
     }
 }
 
-fn parse_values(sql: &str) -> Vec<Vec<String>> {
-    let insert = parse_sql(sql);
+fn parse_values(sql: &str) -> Result<Vec<Vec<String>>, String> {
+    let insert = parse_sql(sql)?;
     match insert {
         Statement::Insert { source, .. } => {
             if let SetExpr::Values(values) = source.body.as_ref() {
@@ -111,16 +112,11 @@ fn parse_values(sql: &str) -> Vec<Vec<String>> {
                             .collect()
                     })
                     .collect();
-                debug!("Parsed {} rows of values", parsed_values.len());
-                parsed_values
+                Ok(parsed_values)
             } else {
-                warn!("Unexpected SetExpr type in INSERT statement");
-                Vec::new()
+                Err("Unexpected SetExpr type in INSERT statement".to_string())
             }
         }
-        _ => {
-            warn!("Unexpected statement type when parsing values");
-            Vec::new()
-        }
+        _ => Err("Unexpected statement type when parsing values".to_string()),
     }
 }

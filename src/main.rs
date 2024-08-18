@@ -12,7 +12,7 @@ fn main() -> std::io::Result<()> {
     info!("Starting application");
 
     // Initialize Rayon thread pool
-    let num_cores = 2;
+    let num_cores = 4;
     ThreadPoolBuilder::new()
         .num_threads(num_cores)
         .build_global()
