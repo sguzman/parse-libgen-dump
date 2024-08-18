@@ -6,8 +6,6 @@ use env_logger::Builder;
 use log::LevelFilter;
 use std::io::Write;
 
-use parse_libgen::logic;
-
 // Files to parse
 const LIBGEN_COMPACT: &str = "libgen_compact.sql";
 
@@ -35,5 +33,5 @@ fn main() {
         .init();
     log::info!("Starting");
 
-    logic(LIBGEN_COMPACT, UPDATED);
+    // logic(LIBGEN_COMPACT, UPDATED);
 }
