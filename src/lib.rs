@@ -4,107 +4,56 @@ use sqlparser::ast::{SetExpr, Statement, Value};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader};
+use std::sync::{Arc, Mutex};
 
-pub fn process_sql_file_parallel(filename: &str) -> std::io::Result<()> {
-    let file = File::open(filename)?;
+pub fn process_sql_file_parallel(input_file: &str, output_file: &str) -> std::io::Result<()> {
+    let file = File::open(input_file)?;
     let reader = BufReader::new(file);
+    let writer = Arc::new(Mutex::new(csv::Writer::from_path(output_file)?));
 
-    // Read the file into a Vec<String>
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    // Process lines in parallel
+    let headers = Arc::new(Mutex::new(None));
+    let insert_count = Arc::new(Mutex::new(0));
+
     lines.par_iter().for_each(|line| {
-        // Process each line here
-        // Make sure to use thread-safe operations
+        if line.trim_start().to_lowercase().starts_with("insert into") {
+            let values = parse_values(line);
+
+            // Write headers if not written yet
+            {
+                let mut headers_guard = headers.lock().unwrap();
+                if headers_guard.is_none() {
+                    let column_names = column_names(line);
+                    *headers_guard = Some(column_names.clone());
+                    let mut writer = writer.lock().unwrap();
+                    writer.write_record(&column_names).unwrap();
+                    info!("CSV headers written: {:?}", column_names);
+                }
+            }
+
+            // Write values
+            {
+                let mut writer = writer.lock().unwrap();
+                for row in values {
+                    writer.write_record(&row).unwrap();
+                }
+            }
+
+            // Increment insert count
+            {
+                let mut count = insert_count.lock().unwrap();
+                *count += 1;
+                if *count % 1000 == 0 {
+                    info!("Processed {} INSERT statements", *count);
+                }
+            }
+        }
     });
 
-    Ok(())
-}
-
-fn extract_create_tables(input_file: &str, output_file: &str) -> std::io::Result<()> {
-    let input = File::open(input_file)?;
-    let reader = BufReader::new(input);
-    let mut output = File::create(output_file)?;
-
-    let mut in_create_table = false;
-    let mut table_count = 0;
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim_start().to_lowercase().starts_with("create table") {
-            in_create_table = true;
-            table_count += 1;
-            debug!("Found CREATE TABLE statement: {}", line);
-        }
-        if in_create_table {
-            writeln!(output, "{}", line)?;
-        }
-        if line.trim().ends_with(";") {
-            in_create_table = false;
-        }
-    }
-    info!("Extracted {} CREATE TABLE statements", table_count);
-    Ok(())
-}
-
-fn process_large_file(input_file: &str, output_file: &str) -> std::io::Result<()> {
-    let input = File::open(input_file)?;
-    let reader = BufReader::new(input);
-    let mut writer = csv::Writer::from_path(output_file)?;
-
-    let mut headers_written = false;
-    let mut insert_count = 0;
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim_start().to_lowercase().starts_with("insert into") {
-            insert_count += 1;
-            let values = parse_values(&line);
-            if !headers_written {
-                let headers = column_names(&line);
-                writer.write_record(&headers)?;
-                headers_written = true;
-                info!("CSV headers written: {:?}", headers);
-            }
-            for row in values {
-                writer.write_record(&row)?;
-            }
-            if insert_count % 1000 == 0 {
-                info!("Processed {} INSERT statements", insert_count);
-            }
-        }
-        if index % 100000 == 0 {
-            debug!("Processed {} lines", index);
-        }
-    }
-    writer.flush()?;
-    info!("Total INSERT statements processed: {}", insert_count);
-    Ok(())
-}
-
-fn process_small_file(input_file: &str, output_file: &str) -> std::io::Result<()> {
-    let contents = std::fs::read_to_string(input_file)?;
-    let mut writer = csv::Writer::from_path(output_file)?;
-
-    let mut headers_written = false;
-    let mut insert_count = 0;
-    for line in contents.lines() {
-        if line.trim_start().to_lowercase().starts_with("insert into") {
-            insert_count += 1;
-            let values = parse_values(line);
-            if !headers_written {
-                let headers = column_names(line);
-                writer.write_record(&headers)?;
-                headers_written = true;
-                info!("CSV headers written: {:?}", headers);
-            }
-            for row in values {
-                writer.write_record(&row)?;
-            }
-        }
-    }
-    writer.flush()?;
-    info!("Total INSERT statements processed: {}", insert_count);
+    let final_count = *insert_count.lock().unwrap();
+    info!("Total INSERT statements processed: {}", final_count);
     Ok(())
 }
 
