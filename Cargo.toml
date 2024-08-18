@@ -19,12 +19,3 @@ tokio = { version = "1.33.0", features = ["full"] }
 [[bin]]
 name = "main"
 path = "src/main.rs"
-
-# Additional binaries
-[[bin]]
-name = "libgen"
-path = "src/libgen.rs"
-
-[[bin]]
-name = "fiction"
-path = "src/fiction.rs"
