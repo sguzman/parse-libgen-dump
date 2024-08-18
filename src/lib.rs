@@ -1,10 +1,10 @@
-use log::error;
+use log::{error, info};
 use rayon::prelude::*;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,30 +16,34 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) -> std::io::Result<(
 
     // First pass: extract CREATE TABLE statements
     let (tables, create_statements) = extract_create_tables(&lines);
-
+    
     // Write CREATE TABLE statements to a file
     write_create_tables(&create_statements, output_dir)?;
 
+    // Create CSV files for each table
+    for table in &tables {
+        let csv_path = Path::new(output_dir).join(format!("{}.csv", table));
+        File::create(csv_path)?;
+    }
+
     // Second pass: process INSERT statements in parallel
-    let table_data = Arc::new(Mutex::new(HashMap::new()));
+    let tables = Arc::new(tables);
+    let output_dir = Arc::new(output_dir.to_string());
 
     lines.par_iter().for_each(|line| {
         if line.trim_start().to_lowercase().starts_with("insert into") {
             if let Ok((table_name, values)) = parse_insert(line) {
                 if tables.contains(&table_name) {
-                    let mut table_data = table_data.lock().unwrap();
-                    table_data
-                        .entry(table_name)
-                        .or_insert_with(Vec::new)
-                        .push(values);
+                    let csv_path = Path::new(&*output_dir).join(format!("{}.csv", table_name));
+                    if let Err(e) = append_to_csv(&csv_path, &values) {
+                        error!("Failed to write to CSV for table {}: {}", table_name, e);
+                    }
                 }
             }
         }
     });
 
-    // Write data to CSV files
-    write_csv_files(table_data.lock().unwrap(), output_dir)?;
-
+    info!("Processing complete. Check the output directory for results.");
     Ok(())
 }
 
@@ -94,15 +98,11 @@ fn write_create_tables(create_statements: &[String], output_dir: &str) -> std::i
 fn parse_insert(sql: &str) -> Result<(String, Vec<String>), String> {
     let dialect = MySqlDialect {};
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
-    if let Statement::Insert {
-        table_name, source, ..
-    } = &ast[0]
-    {
+    if let Statement::Insert { table_name, source, .. } = &ast[0] {
         let table_name = table_name.to_string();
         if let sqlparser::ast::SetExpr::Values(values) = source.body.as_ref() {
             if let Some(row) = values.rows.first() {
-                let parsed_values: Vec<String> = row
-                    .iter()
+                let parsed_values: Vec<String> = row.iter()
                     .map(|expr| match expr {
                         sqlparser::ast::Expr::Value(val) => match val {
                             sqlparser::ast::Value::Number(n, _) => n.to_string(),
@@ -120,17 +120,15 @@ fn parse_insert(sql: &str) -> Result<(String, Vec<String>), String> {
     Err("Failed to parse INSERT statement".to_string())
 }
 
-fn write_csv_files(
-    table_data: impl std::ops::Deref<Target = HashMap<String, Vec<Vec<String>>>>,
-    output_dir: &str,
-) -> std::io::Result<()> {
-    for (table_name, rows) in table_data.iter() {
-        let path = Path::new(output_dir).join(format!("{}.csv", table_name));
-        let mut writer = csv::Writer::from_path(path)?;
-        for row in rows {
-            writer.write_record(row)?;
-        }
-        writer.flush()?;
-    }
+fn append_to_csv(path: &Path, values: &[String]) -> std::io::Result<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(path)?;
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(file);
+    writer.write_record(values)?;
+    writer.flush()?;
     Ok(())
 }
