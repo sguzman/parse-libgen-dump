@@ -1,9 +1,9 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
 use sqlparser::ast::{SetExpr, Statement, Value};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 
 pub fn process_sql_file(input_file: &str) -> std::io::Result<()> {
     let file_name = Path::new(input_file).file_stem().unwrap().to_str().unwrap();

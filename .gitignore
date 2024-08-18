@@ -24,3 +24,4 @@ scimag.csv
 *.log
 *.csv
 *.sql
+resources/
