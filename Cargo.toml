@@ -7,13 +7,13 @@ default-run = "main"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-sqlparser = "0.35.0"
+sqlparser = "0.50.0"
 csv = "1.1"
 log = "0.4"
-env_logger = "0.10"
-rayon = "1.7"
+env_logger = "0.11.5"
+rayon = "1.10.0"
 num_cpus = "1.15"
-regex = "1.5"
+regex = "1.10.6"
 # Default binary
 [[bin]]
 name = "main"
