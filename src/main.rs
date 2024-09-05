@@ -15,21 +15,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub fn process_sql_file(input_file: &str, output_dir: &str) {
-    let file = File::open(input_file).unwrap_or_else(|e| {
-        error!("Failed to open input file: {}", e);
-        std::process::exit(1);
-    });
-    let reader = BufReader::new(file);
-    // Iterate over lines in the file in parallel and filter out non-CREATE TABLE statements
-    let create_table_lines: Vec<String> = reader
+fn find_lines_with_prefix<R: BufRead + Send>(reader: R, prefix: &str) -> Vec<usize> {
+    reader
         .lines()
+        .enumerate()
         .par_bridge()
-        .filter_map(|line_result| match line_result {
+        .filter_map(|(line_number, line_result)| match line_result {
             Ok(line) => {
                 let trimmed_line = line.trim().to_uppercase();
-                if trimmed_line.starts_with("CREATE TABLE") {
-                    Some(line)
+                if trimmed_line.starts_with(prefix) {
+                    info!("{} found at line {}: {}", prefix, line_number + 1, line);
+                    Some(line_number)
                 } else {
                     None
                 }
@@ -39,7 +35,16 @@ pub fn process_sql_file(input_file: &str, output_dir: &str) {
                 None
             }
         })
-        .collect();
+        .collect()
+}
+
+pub fn process_sql_file(input_file: &str, output_dir: &str) {
+    let file = File::open(input_file).unwrap_or_else(|e| {
+        error!("Failed to open input file: {}", e);
+        std::process::exit(1);
+    });
+    let reader = BufReader::new(file);
+    let create_table_lines = find_lines_with_prefix(reader, "CREATE TABLE");
 
     info!("Found {} CREATE TABLE statements", create_table_lines.len());
 
