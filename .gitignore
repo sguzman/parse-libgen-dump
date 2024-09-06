@@ -25,3 +25,5 @@ scimag.csv
 *.csv
 *.sql
 resources/
+cache/
+.cache/
