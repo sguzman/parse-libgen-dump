@@ -1,48 +1,17 @@
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use env_logger::Env;
+use log::info;
 use std::path::Path;
-use std::collections::HashMap;
-use regex::Regex;
-use csv::Writer;
-use log::{info, warn, error};
-use sqlparser::ast::{Statement, SetExpr, Values};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
 
-// ... existing imports and setup ...
+const INPUT_FILE: &str = "resources/data.sql";
 
-fn extract_column_names(create_statement: &str) -> Vec<String> {
-    // ... implementation ...
-}
+fn main() -> std::io::Result<()> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
 
-fn process_create_statements(input_file: &Path) -> HashMap<String, Vec<String>> {
-    // ... implementation ...
-}
+    let input_file = Path::new(INPUT_FILE);
+    info!("Processing file: {}", input_file.display());
 
-fn parse_insert_values(string: &str) -> Vec<Vec<Option<String>>> {
-    // ... implementation using sqlparser ...
-}
-
-fn process_insert_statements(input_file: &Path, table_columns: &HashMap<String, Vec<String>>) {
-    // ... implementation ...
-}
-
-fn main() {
-    // ... setup logging ...
-
-    let script_dir = std::env::current_dir().unwrap();
-    let resources_dir = script_dir.join("resources");
-    let input_file = resources_dir.join("data.sql");
-
-    if !input_file.exists() {
-        error!("Input file not found: {:?}", input_file);
-        return;
-    }
-
-    info!("Starting to process {:?}", input_file);
-
-    let table_columns = process_create_statements(&input_file);
-    process_insert_statements(&input_file, &table_columns);
-
-    info!("Processing complete");
+    info!("SQL file processing completed successfully");
+    Ok(())
 }
