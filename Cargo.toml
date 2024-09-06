@@ -15,7 +15,7 @@ rayon = "1.10.0"
 num_cpus = "1.16.0"
 cached = { version = "0.53.1", features = ["disk_store"] }
 thiserror = "1.0.50"
-
+serde = "1.0.210"
 # Default binary
 [[bin]]
 name = "main"
