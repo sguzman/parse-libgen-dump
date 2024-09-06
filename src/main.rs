@@ -14,6 +14,23 @@ enum CacheError {
 
 const INPUT_FILE: &str = "resources/data.sql";
 
+type InputFile = &'static str;
+type IndexType = u64;
+
+type CreateStmtLineNum = IndexType;
+type CreateStmtLineNumPlus = IndexType;
+type CreateStmtLineNums = Vec<CreateStmtLineNum>;
+type CreateStmtRawRange = (CreateStmtLineNum, CreateStmtLineNumPlus);
+type CreateStmtLines = Vec<String>;
+type CreateStmtString = String;
+type CreateStmtStrings = Vec<CreateStmtString>;
+
+type InsertStmtLineNum = IndexType;
+type InsertStmtLineNumPlus = IndexType;
+type InsertStmtLineNums = Vec<InsertStmtLineNum>;
+type InsertStmtLineString = String;
+type InsertStmtLineStrings = Vec<InsertStmtLineString>;
+
 // Compose two arbitrary functions
 fn compose<F, G, A, B, C>(f: F, g: G) -> impl Fn(A) -> Result<cached::Return<C>, CacheError>
 where
@@ -22,9 +39,6 @@ where
 {
     move |x: A| f(x).and_then(|y: B| g(y).map(cached::Return::new))
 }
-
-// Type of f1
-type F1 = fn(&str) -> Result<Vec<Vec<String>>, CacheError>;
 
 fn main() -> std::io::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
